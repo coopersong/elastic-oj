@@ -1,6 +1,6 @@
 # elastic-oj
 
-elastic-oj aims to provide a online judge service for elastic search query.
+elastic-oj aims to provide an online judge service for elastic search query.
 
 ## Getting Started to Development
 
