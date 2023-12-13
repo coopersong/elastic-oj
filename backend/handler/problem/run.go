@@ -1,12 +1,15 @@
 package problem
 
 import (
-	"io"
+	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/gin-gonic/gin"
+
+	"elastic-oj/common"
+	"elastic-oj/storage/mysql"
 )
 
 const (
@@ -17,7 +20,7 @@ const (
 // Submit ...
 type Submit struct {
 	ProblemID      string `json:"ProblemID"`
-	SubmittedQuery string `json:"SubmittedQuery""`
+	SubmittedQuery string `json:"SubmittedQuery"`
 }
 
 // RunProblem ...
@@ -32,7 +35,7 @@ func (h *Handler) RunProblem(ctx *gin.Context) {
 	}
 
 	// load problem info
-	problem, err := h.db.GetProblemByID(submit.ProblemID)
+	problem, err := h.problemDao.GetProblemByID(submit.ProblemID)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"message": err.Error(),
@@ -40,82 +43,88 @@ func (h *Handler) RunProblem(ctx *gin.Context) {
 		return
 	}
 
-	var (
-		standardResult []byte
-		realResult     []byte
-	)
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		standardResult = h.callES(ctx, problem.ESIndex, problem.StandardQuery)
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		realResult = h.callES(ctx, problem.ESIndex, submit.SubmittedQuery)
-	}()
-
-	wg.Wait()
-
-	if len(standardResult) == 0 || len(realResult) == 0 {
+	cases, err := h.caseDao.GetCasesByProblemID(submit.ProblemID)
+	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{
-			"message": "no data in es response",
+			"message": err.Error(),
 		})
 		return
 	}
 
-	standardResultStr := string(standardResult)
-	realResultStr := string(realResult)
-	if standardResultStr[strings.Index(standardResultStr, "hits"):] == realResultStr[strings.Index(realResultStr, "hits"):] {
-		ctx.JSON(http.StatusOK, gin.H{
-			"message": Pass,
-		})
-		return
+	for _, cs := range cases {
+		result, err := h.runCase(ctx, submit, problem, cs)
+		if err != nil {
+			ctx.JSON(err.StatusCode(), gin.H{
+				"message": err.Error(),
+			})
+			return
+		}
+
+		if result == Fail {
+			ctx.JSON(http.StatusOK, gin.H{
+				"message": Fail,
+			})
+			return
+		}
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{
-		"message": Fail,
+		"message": Pass,
 	})
 }
 
-func (h *Handler) callES(ctx *gin.Context, index string, query string) []byte {
-	resp, err := h.es.Search(
-		h.es.Search.WithIndex(index),
-		h.es.Search.WithBody(strings.NewReader(query)),
-	)
+func (h *Handler) runCase(ctx *gin.Context, submit *Submit, problem *mysql.Problem, cs *mysql.Case) (string, *common.Error) {
+	var docs []string
+	if err := json.Unmarshal([]byte(cs.Docs), &docs); err != nil {
+		return "", common.NewError(http.StatusInternalServerError, err.Error())
+	}
+
+	if err := h.prepareENV(ctx, problem.ESIndex, docs); err != nil {
+		return "", err
+	}
+
+	standardResult, err := h.callES(ctx, problem.ESIndex, problem.StandardQuery)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{
-			"message": err.Error(),
-		})
-		return nil
+		return "", err
 	}
 
-	if resp.IsError() {
-		if resp.StatusCode >= 500 {
-			ctx.JSON(http.StatusInternalServerError, gin.H{
-				"message": resp.StatusCode,
-			})
-			return nil
-		}
-		ctx.JSON(http.StatusBadRequest, gin.H{
-			"message": resp.StatusCode,
-		})
-		return nil
-	}
-
-	body := resp.Body
-	defer body.Close()
-
-	result, err := io.ReadAll(body)
+	realResult, err := h.callES(ctx, problem.ESIndex, submit.SubmittedQuery)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{
-			"message": err.Error(),
-		})
-		return nil
+		return "", err
 	}
 
-	return result
+	if len(standardResult) == 0 || len(realResult) == 0 {
+		return "", common.NewError(http.StatusInternalServerError, "no data in es response")
+	}
+
+	if standardResult[strings.Index(standardResult, "hits"):] == realResult[strings.Index(realResult, "hits"):] {
+		return Pass, nil
+	}
+
+	return Fail, nil
+}
+
+func (h *Handler) prepareENV(ctx context.Context, index string, docs []string) *common.Error {
+	if err := h.es.DeleteIndexIfExists(index); err != nil {
+		return common.NewError(http.StatusInternalServerError, err.Error())
+	}
+
+	if err := h.es.CreateIndex(ctx, index); err != nil {
+		return common.NewError(http.StatusInternalServerError, err.Error())
+	}
+
+	if err := h.es.BatchIndexDocuments(ctx, index, docs); err != nil {
+		return common.NewError(http.StatusInternalServerError, err.Error())
+	}
+
+	return nil
+}
+
+func (h *Handler) callES(ctx *gin.Context, index string, query string) (string, *common.Error) {
+	resp, err := h.es.Search(ctx, index, query)
+	if err != nil {
+		return "", common.NewError(http.StatusInternalServerError, err.Error())
+	}
+
+	return resp, nil
 }

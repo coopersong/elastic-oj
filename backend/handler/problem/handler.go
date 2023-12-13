@@ -1,35 +1,37 @@
 package problem
 
 import (
-	"github.com/elastic/go-elasticsearch/v8"
-
-	"elastic-oj/storage"
+	"elastic-oj/storage/elasticsearch"
+	"elastic-oj/storage/mysql"
 )
 
 // Handler ...
 type Handler struct {
-	db *storage.ProblemDao
-	es *elasticsearch.Client
+	problemDao *mysql.ProblemDao
+	caseDao    *mysql.CaseDao
+	es         *elasticsearch.Client
 }
 
 // NewHandler ...
 func NewHandler() *Handler {
-	db, err := storage.NewProblemDao()
+	problemDao, err := mysql.NewProblemDao()
 	if err != nil {
 		return nil
 	}
 
-	es, err := elasticsearch.NewClient(elasticsearch.Config{
-		Addresses: []string{
-			"http://127.0.0.1:9200",
-		},
-	})
+	caseDao, err := mysql.NewCaseDao()
 	if err != nil {
+		return nil
+	}
+
+	es := elasticsearch.NewClient()
+	if es == nil {
 		return nil
 	}
 
 	return &Handler{
-		db: db,
-		es: es,
+		problemDao: problemDao,
+		caseDao:    caseDao,
+		es:         es,
 	}
 }

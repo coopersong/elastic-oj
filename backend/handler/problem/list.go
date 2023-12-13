@@ -8,7 +8,7 @@ import (
 
 // ListProblems ...
 func (h *Handler) ListProblems(ctx *gin.Context) {
-	problems, err := h.db.ListProblems()
+	problems, err := h.problemDao.ListProblems()
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"message": err.Error(),

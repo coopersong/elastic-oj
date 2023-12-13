@@ -8,7 +8,7 @@ import (
 
 func (h *Handler) GetProblemByID(ctx *gin.Context) {
 	problemID := ctx.Param("problemID")
-	problem, err := h.db.GetProblemByID(problemID)
+	problem, err := h.problemDao.GetProblemByID(problemID)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"message": err.Error(),
